@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+*.tar.gz
+*.csv.zst
+*.log
+progress.json
+env_report.json
+test_matrix.json
+warp_results/
+system_monitor/
+ontap_perf/
+reports/
+bench.log
+package*.json
