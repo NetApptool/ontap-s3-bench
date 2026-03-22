@@ -11,9 +11,35 @@
 3. **性能测试** — MinIO warp 分布式多客户端压测 (PUT/GET/MIXED/DELETE/LIST)
 4. **报告生成** — HTML 交互式报告 + Word 品牌报告 + 数据打包
 
-## 快速开始
+## 一键部署（推荐）
+
+在任意 Linux 机器上执行一行命令，自动完成所有依赖安装并启动交互式配置：
 
 ```bash
+curl -skL https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main/install.sh | bash
+```
+
+或使用 wget：
+
+```bash
+wget -qO- --no-check-certificate https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main/install.sh | bash
+```
+
+安装脚本自动完成：
+- 系统依赖安装（python3、pip3、wget、gcc、openssl-devel 等）
+- Python 依赖安装（paramiko、requests、matplotlib、python-docx、numpy 等）
+- 项目文件下载
+- 中文字体安装（报告图表用）
+- MinIO warp 预下载
+- 全部验证通过后自动进入交互模式
+
+## 手动安装
+
+```bash
+# 克隆仓库
+git clone https://github.com/NetApptool/ontap-s3-bench.git
+cd ontap-s3-bench
+
 # 安装依赖
 pip3 install -r requirements.txt
 
@@ -32,10 +58,10 @@ python3 ontap_s3_bench.py --report-only
 
 ## 前提条件
 
-- Python 3.8+
-- 控制节点能 SSH 到所有 VM
+- Linux 系统（RHEL/CentOS/Rocky/Ubuntu/Debian）
+- 控制节点能 SSH 到所有客户端 VM
 - 控制节点能通过 HTTPS 访问 ONTAP REST API
-- ONTAP 已启用 S3 服务 (或有 SVM 可用)
+- ONTAP 已启用 S3 服务（或有 SVM 可用）
 - VM 之间网络互通
 
 ## 测试模式
@@ -45,6 +71,19 @@ python3 ontap_s3_bench.py --report-only
 | 快速 | 64KiB, 1MiB | 32, 64 | ~10 | ~15 分钟 |
 | 标准 | 4KiB, 64KiB, 1MiB, 4MiB | 16, 64, 128 | ~30 | ~45 分钟 |
 | 完整 | 4KiB~4MiB (5种) | 16~128 (4种) | ~48 | ~90 分钟 |
+
+## 架构
+
+```
+控制节点 (运行本工具)
+  │
+  ├── SSH ──→ VM1 (warp client + iperf3 + sar)
+  ├── SSH ──→ VM2 (warp client + iperf3 + sar)
+  ├── SSH ──→ VM3 (warp client + iperf3 + sar)
+  │          ...
+  ├── HTTPS ──→ ONTAP REST API (集群管理)
+  └── warp master ──→ 分布式S3压测协调
+```
 
 ## 支持的 Linux 发行版
 
