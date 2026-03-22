@@ -6,7 +6,7 @@
 ###############################################################################
 set -e
 
-REPO_URL="https://ghfast.top/https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main"
+REPO_URL="https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main"
 INSTALL_DIR="$HOME/ontap-s3-bench"
 PYTHON=""
 PIP=""
@@ -192,7 +192,7 @@ install_font() {
     # Fallback: download from GitHub
     info "Downloading font from GitHub..."
     sudo mkdir -p "$FONT_DIR"
-    FONT_URL="https://ghfast.top/https://github.com/anthonyfok/fonts-wqy-microhei/raw/master/wqy-microhei.ttc"
+    FONT_URL="https://github.com/anthonyfok/fonts-wqy-microhei/raw/master/wqy-microhei.ttc"
     sudo wget -q --no-check-certificate -O "$FONT_FILE" "$FONT_URL" 2>/dev/null \
         || sudo curl -skL -o "$FONT_FILE" "$FONT_URL" 2>/dev/null || true
 

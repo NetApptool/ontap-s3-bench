@@ -16,13 +16,13 @@
 在任意 Linux 机器上执行一行命令，自动完成所有依赖安装并启动交互式配置：
 
 ```bash
-curl -skL https://ghfast.top/https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main/install.sh | bash
+curl -skL https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main/install.sh | bash
 ```
 
 或使用 wget：
 
 ```bash
-wget -qO- --no-check-certificate https://ghfast.top/https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main/install.sh | bash
+wget -qO- --no-check-certificate https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main/install.sh | bash
 ```
 
 安装脚本自动完成：
