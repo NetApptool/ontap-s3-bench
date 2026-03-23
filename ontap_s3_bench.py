@@ -1200,8 +1200,8 @@ class Benchmark:
                       f"--tls=false --bucket={self.cfg.s3_bucket} "
                       f"--obj.size=1KiB --concurrent=1 --duration=5s "
                       f"--benchdata=/dev/null 2>&1")
-        result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True, timeout=60)
-        verify_out = result.stdout + result.stderr
+        result = subprocess.run(verify_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        verify_out = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
         if "Average:" in verify_out and "obj/s" in verify_out:
             log.info("S3 连通性验证通过 (warp 写入成功)")
         else:
@@ -1417,8 +1417,8 @@ class Benchmark:
                    f"--benchdata={results_dir}/{scene_name}.csv.zst 2>&1")
 
             try:
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
-                output = result.stdout + result.stderr
+                result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+                output = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
 
                 # Save stdout log
                 with open(os.path.join(results_dir, f"{scene_name}_stdout.log"), "w") as f:
