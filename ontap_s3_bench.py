@@ -1121,14 +1121,36 @@ class Benchmark:
             self.cfg.s3_svm_uuid = svm["uuid"]
             self.cfg.s3_svm_name = svm["name"]
 
-            # Find S3 LIF
-            s3_lifs = [l for l in self.env_data["ontap"]["lifs"]
-                       if "s3" in l["policy"].lower() or "data" in l["policy"].lower()]
-            if s3_lifs:
+            # Find S3 LIF — prioritize policy with 's3', then show all data LIFs for user to choose
+            all_lifs = self.env_data["ontap"]["lifs"]
+            s3_lifs = [l for l in all_lifs if "s3" in l["policy"].lower()]
+            if not s3_lifs:
+                s3_lifs = [l for l in all_lifs
+                           if "data" in l["policy"].lower() and "mgmt" not in l["policy"].lower()]
+
+            if len(s3_lifs) == 1:
                 self.cfg.s3_lif_ip = s3_lifs[0]["ip"]
-                print(f"  S3 LIF: {self.cfg.s3_lif_ip}")
+                print(f"  S3 LIF: {self.cfg.s3_lif_ip} (policy: {s3_lifs[0]['policy']}, 端口: {s3_lifs[0].get('port','')})")
+                confirm = input("  确认使用此 LIF? [Y/n]: ").strip().lower()
+                if confirm == "n":
+                    self.cfg.s3_lif_ip = input("  输入 S3 LIF IP: ").strip()
+            elif len(s3_lifs) > 1:
+                print(f"  发现以下 LIF:")
+                for i, l in enumerate(s3_lifs, 1):
+                    print(f"    [{i}] {l['ip']} (policy: {l['policy']}, 端口: {l.get('port','')})")
+                print(f"    [0] 手动输入")
+                choice = input(f"\n  选择 S3 LIF [1]: ").strip() or "1"
+                if choice == "0":
+                    self.cfg.s3_lif_ip = input("  输入 S3 LIF IP: ").strip()
+                else:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(s3_lifs):
+                        self.cfg.s3_lif_ip = s3_lifs[idx]["ip"]
+                    else:
+                        self.cfg.s3_lif_ip = s3_lifs[0]["ip"]
+                print(f"  已选 S3 LIF: {self.cfg.s3_lif_ip}")
             else:
-                self.cfg.s3_lif_ip = input("  输入 S3 LIF IP: ").strip()
+                self.cfg.s3_lif_ip = input("  未找到 S3 LIF，请手动输入 IP: ").strip()
 
             # Check existing users
             users = self.ontap.get_s3_users(self.cfg.s3_svm_uuid)
