@@ -1289,7 +1289,8 @@ c.delete_object(Bucket='{self.cfg.s3_bucket}', Key='test-verify')
                 self.ssh.run(ip, f"{pkg_cmd} install -y iperf3 sysstat nmap-ncat python3-pip 2>/dev/null", timeout=120)
                 self.ssh.run(ip, "pip3 install boto3 2>/dev/null || pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
             elif "apt" in pkg_cmd:
-                self.ssh.run(ip, "apt-get update -q && apt-get install -y iperf3 sysstat ncat awscli 2>/dev/null", timeout=120)
+                self.ssh.run(ip, "apt-get update -q && apt-get install -y iperf3 sysstat ncat python3-pip 2>/dev/null", timeout=120)
+                self.ssh.run(ip, "pip3 install boto3 2>/dev/null || pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
 
         # Sync time
         print("  同步时钟...")
