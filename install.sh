@@ -46,20 +46,10 @@ install_system_deps() {
 
     if [ "$PKG_MGR" = "apt" ]; then
         sudo apt-get update -qq
-        sudo $PKG_INSTALL python3 python3-pip python3-venv python3-dev \
-            wget curl tar gcc make libffi-dev libssl-dev \
-            fonts-wqy-microhei 2>&1 | tail -5
+        sudo $PKG_INSTALL python3 python3-pip wget curl tar
     else
-        # RHEL/CentOS/Rocky
-        sudo $PKG_INSTALL python3 python3-pip python3-devel \
-            wget curl tar gcc make libffi-devel openssl-devel 2>&1 | tail -5
-
-        # EPEL for extra packages (ignore if already installed)
-        if [ "$PKG_MGR" = "dnf" ]; then
-            sudo dnf install -y epel-release 2>/dev/null || true
-        else
-            sudo yum install -y epel-release 2>/dev/null || true
-        fi
+        # RHEL/CentOS/Rocky - only install essentials, pip wheels don't need gcc
+        sudo $PKG_INSTALL python3 python3-pip wget curl tar
     fi
 
     info "System dependencies installed"
@@ -108,39 +98,9 @@ find_python() {
 install_python_deps() {
     step "Installing Python dependencies"
 
-    # Upgrade pip first
-    $PIP install --upgrade pip 2>&1 | tail -1
-
-    # All required packages (including numpy which is missing from requirements.txt)
-    PACKAGES=(
-        "paramiko>=3.0"
-        "requests>=2.28"
-        "matplotlib>=3.6"
-        "jinja2>=3.1"
-        "pyyaml>=6.0"
-        "python-docx>=1.0"
-        "numpy"
-        "urllib3"
-    )
-
-    for pkg in "${PACKAGES[@]}"; do
-        pkg_name=$(echo "$pkg" | sed 's/[><=].*//')
-        if $PYTHON -c "import $pkg_name" 2>/dev/null; then
-            info "$pkg_name - already installed"
-        else
-            info "Installing $pkg_name ..."
-            $PIP install "$pkg" 2>&1 | tail -1
-        fi
-    done
-
-    # Special case: yaml module name differs from package name
-    if ! $PYTHON -c "import yaml" 2>/dev/null; then
-        $PIP install pyyaml 2>&1 | tail -1
-    fi
-    if ! $PYTHON -c "import docx" 2>/dev/null; then
-        $PIP install python-docx 2>&1 | tail -1
-    fi
-
+    # Install all Python packages in one go (faster than one-by-one)
+    info "Installing Python packages (paramiko, requests, matplotlib, etc.)..."
+    $PIP install --quiet paramiko requests matplotlib jinja2 pyyaml python-docx numpy urllib3
     info "All Python dependencies installed"
 }
 
