@@ -47,11 +47,17 @@ main() {
     PY_VER=$($PYTHON --version 2>&1)
     info "Found: $PY_VER ($PYTHON)"
 
-    # --- Ensure pip is available ---
+    # --- Ensure pip is available and up to date ---
     step "Checking pip"
     if ! $PYTHON -m pip --version &>/dev/null; then
         info "pip not found, installing via ensurepip..."
-        $PYTHON -m ensurepip --upgrade 2>&1 || error "Failed to install pip. Run: sudo dnf install -y python3-pip"
+        $PYTHON -m ensurepip --upgrade 2>&1 || error "Failed to install pip. Run: sudo dnf install -y python3-pip or sudo yum install -y python3-pip"
+    fi
+    # Upgrade pip if too old (pip <20 has compatibility issues)
+    PIP_VER=$($PYTHON -m pip --version 2>&1 | grep -oP '\d+' | head -1)
+    if [ "$PIP_VER" -lt 20 ] 2>/dev/null; then
+        info "pip version too old ($PIP_VER), upgrading..."
+        $PYTHON -m pip install --upgrade pip 2>&1 | tail -2
     fi
     info "pip: $($PYTHON -m pip --version 2>&1 | head -1)"
 
