@@ -27,6 +27,11 @@ def ensure_deps():
             missing.append(pkg)
     if missing:
         print(f"[*] 安装缺失依赖: {', '.join(missing)}")
+        # Adjust package versions for Python 3.6/3.7
+        if sys.version_info < (3, 8):
+            ver_map = {"paramiko": "paramiko<3", "requests": "requests<2.28",
+                       "matplotlib": "matplotlib<3.4", "jinja2": "jinja2<3.1"}
+            missing = [ver_map.get(p, p) for p in missing]
         # Try offline wheels first
         script_dir = os.path.dirname(os.path.abspath(__file__))
         wheels_dir = os.path.join(script_dir, "wheels")

@@ -61,13 +61,31 @@ main() {
     WHEEL_COUNT=$(ls "$WHEEL_DIR"/*.whl 2>/dev/null | wc -l)
     info "Found $WHEEL_COUNT wheel files"
 
+    # Detect Python version to choose compatible package versions
+    PY_MINOR=$($PYTHON -c "import sys;print(sys.version_info.minor)")
+    if [ "$PY_MINOR" -le 7 ]; then
+        # Python 3.6/3.7: use older compatible versions
+        PKGS="paramiko<3 requests<2.28 matplotlib<3.4 jinja2<3.1 pyyaml numpy<1.20"
+        info "Python 3.${PY_MINOR} detected, using compatible package versions"
+    else
+        PKGS="paramiko requests matplotlib jinja2 pyyaml python-docx numpy"
+    fi
+
     $PYTHON -m pip install --quiet \
         --no-index --find-links "$WHEEL_DIR" \
-        paramiko requests matplotlib jinja2 pyyaml python-docx numpy 2>&1 \
+        $PKGS 2>&1 \
         || $PYTHON -m pip install --quiet --break-system-packages \
             --no-index --find-links "$WHEEL_DIR" \
-            paramiko requests matplotlib jinja2 pyyaml python-docx numpy 2>&1 \
+            $PKGS 2>&1 \
         || error "Python dependencies installation failed"
+
+    # python-docx: try wheel first, fall back to source tarball
+    if ! $PYTHON -c "import docx" 2>/dev/null; then
+        $PYTHON -m pip install --quiet --no-index --find-links "$WHEEL_DIR" python-docx 2>&1 \
+            || $PYTHON -m pip install --quiet --find-links "$WHEEL_DIR" python-docx 2>&1 \
+            || warn "python-docx install failed (Word report will be unavailable)"
+    fi
+
     info "All Python dependencies installed"
 
     # --- Install project files ---
