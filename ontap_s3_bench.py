@@ -1159,8 +1159,8 @@ class Benchmark:
         print("  (确保 VM 已安装 boto3...)")
         for vm in self.cfg.vms:
             self.ssh.run(vm["ip"],
-                "pip3 install -q boto3 --break-system-packages 2>/dev/null || "
-                "pip install -q boto3 --break-system-packages 2>/dev/null || true",
+                "pip3 install -q boto3 2>/dev/null || "
+                "pip3 install -q boto3 --break-system-packages 2>/dev/null || true",
                 timeout=120)
         ok_count = 0
         verify_script = textwrap.dedent(f'''
@@ -1287,7 +1287,7 @@ c.delete_object(Bucket='{self.cfg.s3_bucket}', Key='test-verify')
             pkg_cmd = out.strip()
             if "dnf" in pkg_cmd or "yum" in pkg_cmd:
                 self.ssh.run(ip, f"{pkg_cmd} install -y iperf3 sysstat nmap-ncat python3-pip 2>/dev/null", timeout=120)
-                self.ssh.run(ip, "pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
+                self.ssh.run(ip, "pip3 install boto3 2>/dev/null || pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
             elif "apt" in pkg_cmd:
                 self.ssh.run(ip, "apt-get update -q && apt-get install -y iperf3 sysstat ncat awscli 2>/dev/null", timeout=120)
 
