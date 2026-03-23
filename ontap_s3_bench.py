@@ -1154,33 +1154,51 @@ class Benchmark:
             log.error("未找到 S3 服务，请先在 ONTAP 上启用 S3")
             sys.exit(1)
 
-        # Verify connectivity
+        # Verify connectivity (install boto3 on VMs first, then use python3+boto3)
         print("  验证 S3 连通性...")
+        print("  (确保 VM 已安装 boto3...)")
+        for vm in self.cfg.vms:
+            self.ssh.run(vm["ip"],
+                "pip3 install -q boto3 --break-system-packages 2>/dev/null || "
+                "pip install -q boto3 --break-system-packages 2>/dev/null || true",
+                timeout=120)
         ok_count = 0
+        verify_script = textwrap.dedent(f'''
+            python3 -c "
+import boto3, botocore
+c = boto3.client('s3', endpoint_url='{self.cfg.s3_endpoint}',
+    aws_access_key_id='{self.cfg.s3_access_key}',
+    aws_secret_access_key='{self.cfg.s3_secret_key}',
+    verify=False, region_name='us-east-1',
+    config=botocore.config.Config(signature_version='s3v4'))
+c.put_object(Bucket='{self.cfg.s3_bucket}', Key='test-verify', Body=b'ok')
+print('OK')
+" 2>&1 || curl -sk -o /dev/null -w 'HTTP%{{http_code}}' {self.cfg.s3_endpoint} 2>&1
+        ''')
         for vm in self.cfg.vms:
             ip = vm["ip"]
-            rc, out, err = self.ssh.run(ip, textwrap.dedent(f'''
-                export AWS_ACCESS_KEY_ID={self.cfg.s3_access_key}
-                export AWS_SECRET_ACCESS_KEY={self.cfg.s3_secret_key}
-                export AWS_DEFAULT_REGION=us-east-1
-                aws s3api put-object --bucket {self.cfg.s3_bucket} --key test-verify \
-                  --body /etc/hostname --endpoint-url {self.cfg.s3_endpoint} 2>&1 && echo OK
-            '''))
+            rc, out, err = self.ssh.run(ip, verify_script)
             if "OK" in out:
                 ok_count += 1
                 print(f"    {ip}: ✓")
             else:
-                print(f"    {ip}: ✗ {err[:50]}")
+                detail = (out + err).strip()[:80]
+                print(f"    {ip}: ✗ {detail}")
 
         # Clean up test object
         if ok_count > 0:
-            self.ssh.run(self.cfg.vms[0]["ip"], textwrap.dedent(f'''
-                export AWS_ACCESS_KEY_ID={self.cfg.s3_access_key}
-                export AWS_SECRET_ACCESS_KEY={self.cfg.s3_secret_key}
-                export AWS_DEFAULT_REGION=us-east-1
-                aws s3api delete-object --bucket {self.cfg.s3_bucket} --key test-verify \
-                  --endpoint-url {self.cfg.s3_endpoint} 2>/dev/null
-            '''))
+            cleanup_script = textwrap.dedent(f'''
+                python3 -c "
+import boto3, botocore
+c = boto3.client('s3', endpoint_url='{self.cfg.s3_endpoint}',
+    aws_access_key_id='{self.cfg.s3_access_key}',
+    aws_secret_access_key='{self.cfg.s3_secret_key}',
+    verify=False, region_name='us-east-1',
+    config=botocore.config.Config(signature_version='s3v4'))
+c.delete_object(Bucket='{self.cfg.s3_bucket}', Key='test-verify')
+" 2>/dev/null
+            ''')
+            self.ssh.run(self.cfg.vms[0]["ip"], cleanup_script)
 
         log.info(f"S3 验证: {ok_count}/{len(self.cfg.vms)} 通过")
 
@@ -1269,7 +1287,7 @@ class Benchmark:
             pkg_cmd = out.strip()
             if "dnf" in pkg_cmd or "yum" in pkg_cmd:
                 self.ssh.run(ip, f"{pkg_cmd} install -y iperf3 sysstat nmap-ncat python3-pip 2>/dev/null", timeout=120)
-                self.ssh.run(ip, "pip3 install awscli --break-system-packages 2>/dev/null", timeout=120)
+                self.ssh.run(ip, "pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
             elif "apt" in pkg_cmd:
                 self.ssh.run(ip, "apt-get update -q && apt-get install -y iperf3 sysstat ncat awscli 2>/dev/null", timeout=120)
 
