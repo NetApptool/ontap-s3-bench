@@ -1165,21 +1165,23 @@ class Benchmark:
             log.error("未找到 S3 服务，请先在 ONTAP 上启用 S3")
             sys.exit(1)
 
-        # Verify connectivity (curl)
-        print("  验证 S3 连通性...")
-        ok_count = 0
-        for vm in self.cfg.vms:
-            ip = vm["ip"]
-            rc, out, err = self.ssh.run(ip,
-                f"curl -sk -o /dev/null -w '%{{http_code}}' {self.cfg.s3_endpoint}/ 2>&1")
-            http_code = out.strip().strip("'")
-            if http_code in ("200", "403", "301", "307"):
-                ok_count += 1
-                print(f"    {ip}: ✓ (HTTP {http_code})")
-            else:
-                print(f"    {ip}: ✗ (HTTP {http_code}) {err[:50]}")
-
-        log.info(f"S3 验证: {ok_count}/{len(self.cfg.vms)} 通过")
+        # Verify connectivity (warp put 5s)
+        print("  验证 S3 连通性 (warp写入测试)...")
+        verify_cmd = (f"warp put --host={self.cfg.s3_lif_ip}:{self.cfg.s3_port} "
+                      f"--access-key={self.cfg.s3_access_key} "
+                      f"--secret-key={self.cfg.s3_secret_key} "
+                      f"--tls=false --bucket={self.cfg.s3_bucket} "
+                      f"--obj.size=1KiB --concurrent=1 --duration=5s "
+                      f"--benchdata=/dev/null 2>&1")
+        result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True, timeout=60)
+        verify_out = result.stdout + result.stderr
+        if "Average:" in verify_out and "obj/s" in verify_out:
+            log.info("S3 连通性验证通过 (warp 写入成功)")
+        else:
+            log.error("S3 连通性验证失败!")
+            print(f"  warp 输出:\n{verify_out[-500:]}")
+            print("\n  请检查: 1) S3 LIF 是否可达  2) 防火墙是否放通  3) Access Key 是否正确")
+            sys.exit(1)
 
         # Save config
         self.env_data["s3_config"] = {
