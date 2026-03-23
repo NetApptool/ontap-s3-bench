@@ -1291,6 +1291,13 @@ class Benchmark:
             self.ssh.upload(ip, warp_path, "/usr/local/bin/warp")
         progress_bar(len(self.cfg.vms), len(self.cfg.vms), "分发 warp")
 
+        # Disable firewall on VMs
+        print("  关闭 VM 防火墙...")
+        for vm in self.cfg.vms:
+            ip = vm["ip"]
+            self.ssh.run(ip, "systemctl stop firewalld 2>/dev/null; iptables -F 2>/dev/null || true")
+            log.info(f"{ip} 防火墙已关闭")
+
         # Sync time
         print("  同步时钟...")
         for vm in self.cfg.vms:
@@ -1305,12 +1312,13 @@ class Benchmark:
 
         time.sleep(5)
 
-        # Verify
+        # Verify warp client connectivity — fail fast if unreachable
+        import socket
         ok = 0
+        failed = []
         for vm in self.cfg.vms:
             ip = vm["ip"]
             try:
-                import socket
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(5)
                 s.connect((ip, WARP_PORT))
@@ -1318,7 +1326,14 @@ class Benchmark:
                 ok += 1
                 log.info(f"{ip}:{WARP_PORT} ✓")
             except Exception:
+                failed.append(ip)
                 log.error(f"{ip}:{WARP_PORT} 连接失败")
+
+        if failed:
+            log.error(f"warp client 连通检查失败: {', '.join(failed)}")
+            print(f"\n  请检查: 1) VM 防火墙  2) warp client 进程  3) 网络连通性")
+            sys.exit(1)
+
         log.info(f"warp client: {ok}/{len(self.cfg.vms)} 就绪")
 
         self.progress.mark_done("step5_deploy")
