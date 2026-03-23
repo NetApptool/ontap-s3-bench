@@ -1,7 +1,7 @@
 #!/bin/bash
 ###############################################################################
-# ONTAP S3 Bench - Offline Installer
-# All dependencies bundled, no internet required
+# ONTAP S3 Bench - Smart Installer
+# Auto-detect: offline (local wheels) or online (download from internet)
 ###############################################################################
 set -e
 
@@ -18,23 +18,39 @@ step()  { echo -e "\n${CYAN}========== $1 ==========${NC}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/ontap-s3-bench"
+REPO_URL="https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main"
+WARP_CDN="https://dl.min.io/aistor/warp/release/linux-amd64/warp"
+
+# Detect mode: offline if wheels/ exists in same dir, otherwise online
+if [ -d "$SCRIPT_DIR/wheels" ] && [ -f "$SCRIPT_DIR/ontap_s3_bench.py" ]; then
+    MODE="offline"
+else
+    MODE="online"
+fi
 
 main() {
     echo -e "${CYAN}"
     echo "╔══════════════════════════════════════════════════════╗"
-    echo "║   ONTAP S3 Bench - Offline Installer                ║"
-    echo "║   All dependencies bundled, no internet required    ║"
+    echo "║   ONTAP S3 Bench - Auto Installer ($MODE mode)      ║"
     echo "╚══════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
-    # --- Check package contents ---
-    step "Checking package contents"
-    [ -f "$SCRIPT_DIR/ontap_s3_bench.py" ] || error "ontap_s3_bench.py not found"
-    [ -f "$SCRIPT_DIR/bin/warp" ]           || error "bin/warp not found"
-    [ -d "$SCRIPT_DIR/wheels" ]             || error "wheels/ directory not found"
-    info "Package contents OK"
+    find_python
+    ensure_pip
 
-    # --- Find Python 3 ---
+    if [ "$MODE" = "offline" ]; then
+        install_offline
+    else
+        install_online
+    fi
+
+    install_warp
+    install_font
+    verify
+    done_msg
+}
+
+find_python() {
     step "Detecting Python 3"
     PYTHON=""
     for cmd in python3 python3.12 python3.11 python3.9 python3.8; do
@@ -43,110 +59,135 @@ main() {
             break
         fi
     done
-    [ -z "$PYTHON" ] && error "Python 3 not found. Install python3 first: sudo dnf install -y python3"
-    PY_VER=$($PYTHON --version 2>&1)
-    info "Found: $PY_VER ($PYTHON)"
+    [ -z "$PYTHON" ] && error "Python 3 not found. Run: sudo yum install -y python3 or sudo dnf install -y python3"
+    info "Found: $($PYTHON --version 2>&1) ($PYTHON)"
+}
 
-    # --- Ensure pip is available and up to date ---
+ensure_pip() {
     step "Checking pip"
     if ! $PYTHON -m pip --version &>/dev/null; then
         info "pip not found, installing via ensurepip..."
-        $PYTHON -m ensurepip --upgrade 2>&1 || error "Failed to install pip. Run: sudo dnf install -y python3-pip or sudo yum install -y python3-pip"
+        $PYTHON -m ensurepip --upgrade 2>&1 || error "Failed to install pip. Run: sudo yum install -y python3-pip"
     fi
-    # Upgrade pip if too old (pip <20 has compatibility issues)
     PIP_VER=$($PYTHON -m pip --version 2>&1 | grep -oP '\d+' | head -1)
     if [ "$PIP_VER" -lt 20 ] 2>/dev/null; then
-        info "pip version too old ($PIP_VER), upgrading..."
+        info "pip too old ($PIP_VER), upgrading..."
         $PYTHON -m pip install --upgrade pip 2>&1 | tail -2
     fi
     info "pip: $($PYTHON -m pip --version 2>&1 | head -1)"
+}
 
-    # --- Install Python dependencies from local wheels ---
-    step "Installing Python dependencies (offline)"
-    WHEEL_DIR="$SCRIPT_DIR/wheels"
-    WHEEL_COUNT=$(ls "$WHEEL_DIR"/*.whl 2>/dev/null | wc -l)
-    info "Found $WHEEL_COUNT wheel files"
-
-    # Detect Python version to choose compatible package versions
+get_pkgs() {
     PY_MINOR=$($PYTHON -c "import sys;print(sys.version_info.minor)")
     if [ "$PY_MINOR" -le 7 ]; then
-        # Python 3.6/3.7: use older compatible versions
         PKGS="paramiko<3 requests<2.28 matplotlib<3.4 jinja2<3.1 pyyaml numpy<1.20"
-        info "Python 3.${PY_MINOR} detected, using compatible package versions"
+        info "Python 3.${PY_MINOR}: using compatible package versions"
     else
         PKGS="paramiko requests matplotlib jinja2 pyyaml python-docx numpy"
     fi
+}
 
-    $PYTHON -m pip install --quiet \
-        --no-index --find-links "$WHEEL_DIR" \
-        $PKGS 2>&1 \
-        || $PYTHON -m pip install --quiet --break-system-packages \
-            --no-index --find-links "$WHEEL_DIR" \
-            $PKGS 2>&1 \
+install_offline() {
+    step "Installing Python dependencies (offline)"
+    WHEEL_DIR="$SCRIPT_DIR/wheels"
+    info "Found $(ls "$WHEEL_DIR"/*.whl 2>/dev/null | wc -l) wheel files"
+    get_pkgs
+
+    $PYTHON -m pip install --quiet --no-index --find-links "$WHEEL_DIR" $PKGS 2>&1 \
+        || $PYTHON -m pip install --quiet --break-system-packages --no-index --find-links "$WHEEL_DIR" $PKGS 2>&1 \
         || error "Python dependencies installation failed"
 
-    # python-docx: try wheel first, fall back to source tarball
     if ! $PYTHON -c "import docx" 2>/dev/null; then
         $PYTHON -m pip install --quiet --no-index --find-links "$WHEEL_DIR" python-docx 2>&1 \
             || $PYTHON -m pip install --quiet --find-links "$WHEEL_DIR" python-docx 2>&1 \
-            || warn "python-docx install failed (Word report will be unavailable)"
+            || warn "python-docx install failed (Word report unavailable)"
     fi
-
     info "All Python dependencies installed"
 
-    # --- Install project files ---
     step "Installing project files"
     mkdir -p "$INSTALL_DIR"/{bin,fonts}
-
     cp "$SCRIPT_DIR/ontap_s3_bench.py" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/ontap_s3_bench.py"
     cp "$SCRIPT_DIR/config_example.yaml" "$INSTALL_DIR/" 2>/dev/null || true
-
-    # Keep wheels accessible for the script's auto-install fallback
-    if [ ! -d "$INSTALL_DIR/wheels" ]; then
-        ln -sf "$WHEEL_DIR" "$INSTALL_DIR/wheels" 2>/dev/null \
-            || cp -r "$WHEEL_DIR" "$INSTALL_DIR/wheels"
-    fi
+    [ ! -d "$INSTALL_DIR/wheels" ] && ln -sf "$WHEEL_DIR" "$INSTALL_DIR/wheels" 2>/dev/null || true
     info "Project files installed to $INSTALL_DIR"
+}
 
-    # --- Install warp ---
+install_online() {
+    step "Installing Python dependencies (online)"
+    get_pkgs
+
+    $PYTHON -m pip install --quiet $PKGS 2>&1 \
+        || $PYTHON -m pip install --quiet --break-system-packages $PKGS 2>&1 \
+        || $PYTHON -m pip install --user --quiet $PKGS 2>&1 \
+        || error "Python dependencies installation failed"
+
+    if ! $PYTHON -c "import docx" 2>/dev/null; then
+        $PYTHON -m pip install --quiet python-docx 2>&1 || warn "python-docx install failed"
+    fi
+    info "All Python dependencies installed"
+
+    step "Downloading project files"
+    mkdir -p "$INSTALL_DIR"
+    for f in ontap_s3_bench.py config_example.yaml; do
+        info "Downloading $f..."
+        wget -q --no-check-certificate -O "$INSTALL_DIR/$f" "$REPO_URL/$f" 2>/dev/null \
+            || curl -skL -o "$INSTALL_DIR/$f" "$REPO_URL/$f" 2>/dev/null \
+            || error "Failed to download $f"
+    done
+    chmod +x "$INSTALL_DIR/ontap_s3_bench.py"
+    info "Project files installed to $INSTALL_DIR"
+}
+
+install_warp() {
     step "Installing warp"
-    cp "$SCRIPT_DIR/bin/warp" "$INSTALL_DIR/bin/warp"
+    mkdir -p "$INSTALL_DIR/bin"
+
+    if [ -f "$SCRIPT_DIR/bin/warp" ]; then
+        cp "$SCRIPT_DIR/bin/warp" "$INSTALL_DIR/bin/warp"
+    elif [ ! -x "$INSTALL_DIR/bin/warp" ] && ! command -v warp &>/dev/null; then
+        info "Downloading warp..."
+        wget -q --no-check-certificate -O "$INSTALL_DIR/bin/warp" "$WARP_CDN" 2>/dev/null \
+            || curl -skL -o "$INSTALL_DIR/bin/warp" "$WARP_CDN" 2>/dev/null \
+            || error "Failed to download warp"
+    fi
+
     chmod +x "$INSTALL_DIR/bin/warp"
-
-    # Try system-wide install
-    if sudo cp "$INSTALL_DIR/bin/warp" /usr/local/bin/warp 2>/dev/null; then
-        sudo chmod +x /usr/local/bin/warp
-        info "warp installed to /usr/local/bin/warp"
-    else
-        warn "Cannot write to /usr/local/bin, using $INSTALL_DIR/bin/warp"
-        export PATH="$INSTALL_DIR/bin:$PATH"
-    fi
+    sudo cp "$INSTALL_DIR/bin/warp" /usr/local/bin/warp 2>/dev/null && sudo chmod +x /usr/local/bin/warp
     WARP_VER=$("$INSTALL_DIR/bin/warp" --version 2>&1 | head -1)
-    info "warp version: $WARP_VER"
+    info "warp: $WARP_VER"
+}
 
-    # --- Install font ---
+install_font() {
     step "Installing Chinese font"
-    if [ -f "$SCRIPT_DIR/fonts/wqy-microhei.ttc" ]; then
-        cp "$SCRIPT_DIR/fonts/wqy-microhei.ttc" "$INSTALL_DIR/fonts/"
+    FONT_DIR="/usr/share/fonts/wqy"
+    FONT_FILE="$FONT_DIR/wqy-microhei.ttc"
 
-        # Try system-wide install
-        FONT_DIR="/usr/share/fonts/wqy"
-        if sudo mkdir -p "$FONT_DIR" 2>/dev/null && \
-           sudo cp "$SCRIPT_DIR/fonts/wqy-microhei.ttc" "$FONT_DIR/" 2>/dev/null; then
-            sudo fc-cache -f 2>/dev/null || true
-            info "Font installed to $FONT_DIR"
-        else
-            info "Font available at $INSTALL_DIR/fonts/ (no root access for system install)"
-        fi
-    else
-        warn "Font file not found in package, charts may show squares for Chinese"
+    if [ -f "$FONT_FILE" ]; then
+        info "Chinese font already exists"
+        return
     fi
 
-    # Clear matplotlib font cache
-    rm -rf "$HOME/.cache/matplotlib" 2>/dev/null || true
+    if [ -f "$SCRIPT_DIR/fonts/wqy-microhei.ttc" ]; then
+        mkdir -p "$INSTALL_DIR/fonts"
+        cp "$SCRIPT_DIR/fonts/wqy-microhei.ttc" "$INSTALL_DIR/fonts/"
+        sudo mkdir -p "$FONT_DIR" 2>/dev/null && sudo cp "$SCRIPT_DIR/fonts/wqy-microhei.ttc" "$FONT_DIR/" 2>/dev/null
+    else
+        # Try system package or download
+        if command -v yum &>/dev/null; then
+            sudo yum install -y wqy-microhei-fonts 2>/dev/null || true
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y wqy-microhei-fonts 2>/dev/null || true
+        elif command -v apt-get &>/dev/null; then
+            sudo apt-get install -y fonts-wqy-microhei 2>/dev/null || true
+        fi
+    fi
 
-    # --- Verify ---
+    [ -f "$FONT_FILE" ] && info "Font installed" || warn "Font not available, charts may show squares"
+    rm -rf "$HOME/.cache/matplotlib" 2>/dev/null || true
+}
+
+verify() {
     step "Verification"
     echo -e "\n${CYAN}Python packages:${NC}"
     FAIL=0
@@ -160,7 +201,7 @@ main() {
     done
 
     echo -e "\n${CYAN}Tools:${NC}"
-    if [ -x "$INSTALL_DIR/bin/warp" ]; then
+    if command -v warp &>/dev/null || [ -x "$INSTALL_DIR/bin/warp" ]; then
         echo -e "  ${GREEN}OK${NC}  warp ($WARP_VER)"
     else
         echo -e "  ${RED}FAIL${NC}  warp"
@@ -169,36 +210,27 @@ main() {
 
     echo -e "\n${CYAN}Project:${NC}"
     echo "  Location: $INSTALL_DIR"
-    LINE_COUNT=$(wc -l < "$INSTALL_DIR/ontap_s3_bench.py")
-    echo "  Script: ontap_s3_bench.py ($LINE_COUNT lines)"
+    echo "  Script: ontap_s3_bench.py ($(wc -l < "$INSTALL_DIR/ontap_s3_bench.py") lines)"
 
-    if [ "$FAIL" = "1" ]; then
-        error "Some dependencies are missing!"
-    fi
-
+    [ "$FAIL" = "1" ] && error "Some dependencies are missing!"
     echo -e "\n${GREEN}All checks passed!${NC}"
+}
 
-    # --- Done ---
+done_msg() {
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║           Installation Complete!                    ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "Run options:"
-    echo -e "  ${CYAN}Interactive:${NC}  cd $INSTALL_DIR && $PYTHON ontap_s3_bench.py"
-    echo -e "  ${CYAN}Config file:${NC}  cd $INSTALL_DIR && $PYTHON ontap_s3_bench.py --config config.yaml"
-    echo -e "  ${CYAN}Dry run:${NC}      cd $INSTALL_DIR && $PYTHON ontap_s3_bench.py --dry-run"
+    echo -e "Run:  ${CYAN}cd $INSTALL_DIR && $PYTHON ontap_s3_bench.py${NC}"
     echo ""
 
-    # Ask to launch
-    read -p "Launch interactive mode now? [Y/n]: " LAUNCH
+    read -p "Launch now? [Y/n]: " LAUNCH
     LAUNCH=${LAUNCH:-Y}
     if [[ "$LAUNCH" =~ ^[Yy]$ ]]; then
-        echo ""
-        cd "$INSTALL_DIR"
-        exec $PYTHON ontap_s3_bench.py
+        cd "$INSTALL_DIR" && exec $PYTHON ontap_s3_bench.py
     else
-        info "You can run it later: cd $INSTALL_DIR && $PYTHON ontap_s3_bench.py"
+        info "Run later: cd $INSTALL_DIR && $PYTHON ontap_s3_bench.py"
     fi
 }
 
