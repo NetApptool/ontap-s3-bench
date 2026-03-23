@@ -1163,18 +1163,17 @@ class Benchmark:
                 "pip3 install -q boto3 --break-system-packages 2>/dev/null || true",
                 timeout=120)
         ok_count = 0
-        verify_script = textwrap.dedent(f'''
-            python3 -c "
-import boto3, botocore
-c = boto3.client('s3', endpoint_url='{self.cfg.s3_endpoint}',
-    aws_access_key_id='{self.cfg.s3_access_key}',
-    aws_secret_access_key='{self.cfg.s3_secret_key}',
-    verify=False, region_name='us-east-1',
-    config=botocore.config.Config(signature_version='s3v4'))
-c.put_object(Bucket='{self.cfg.s3_bucket}', Key='test-verify', Body=b'ok')
-print('OK')
-" 2>&1 || curl -sk -o /dev/null -w 'HTTP%{{http_code}}' {self.cfg.s3_endpoint} 2>&1
-        ''')
+        verify_script = (
+            f"python3 -c '"
+            f"import boto3,botocore;"
+            f"c=boto3.client(\"s3\",endpoint_url=\"{self.cfg.s3_endpoint}\","
+            f"aws_access_key_id=\"{self.cfg.s3_access_key}\","
+            f"aws_secret_access_key=\"{self.cfg.s3_secret_key}\","
+            f"verify=False,region_name=\"us-east-1\","
+            f"config=botocore.config.Config(signature_version=\"s3v4\"));"
+            f"c.put_object(Bucket=\"{self.cfg.s3_bucket}\",Key=\"test-verify\",Body=b\"ok\");"
+            f"print(\"OK\")' 2>&1"
+        )
         for vm in self.cfg.vms:
             ip = vm["ip"]
             rc, out, err = self.ssh.run(ip, verify_script)
@@ -1187,17 +1186,16 @@ print('OK')
 
         # Clean up test object
         if ok_count > 0:
-            cleanup_script = textwrap.dedent(f'''
-                python3 -c "
-import boto3, botocore
-c = boto3.client('s3', endpoint_url='{self.cfg.s3_endpoint}',
-    aws_access_key_id='{self.cfg.s3_access_key}',
-    aws_secret_access_key='{self.cfg.s3_secret_key}',
-    verify=False, region_name='us-east-1',
-    config=botocore.config.Config(signature_version='s3v4'))
-c.delete_object(Bucket='{self.cfg.s3_bucket}', Key='test-verify')
-" 2>/dev/null
-            ''')
+            cleanup_script = (
+                f"python3 -c '"
+                f"import boto3,botocore;"
+                f"c=boto3.client(\"s3\",endpoint_url=\"{self.cfg.s3_endpoint}\","
+                f"aws_access_key_id=\"{self.cfg.s3_access_key}\","
+                f"aws_secret_access_key=\"{self.cfg.s3_secret_key}\","
+                f"verify=False,region_name=\"us-east-1\","
+                f"config=botocore.config.Config(signature_version=\"s3v4\"));"
+                f"c.delete_object(Bucket=\"{self.cfg.s3_bucket}\",Key=\"test-verify\")' 2>/dev/null"
+            )
             self.ssh.run(self.cfg.vms[0]["ip"], cleanup_script)
 
         log.info(f"S3 验证: {ok_count}/{len(self.cfg.vms)} 通过")
