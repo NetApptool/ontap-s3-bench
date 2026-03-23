@@ -1,207 +1,129 @@
 #!/bin/bash
 ###############################################################################
-# ONTAP S3 Bench - One-Click Auto Deploy Script
-# Auto download, install all dependencies, and launch interactive mode
-# Supports: RHEL/CentOS/Rocky 8+ | Ubuntu/Debian 20+
+# ONTAP S3 Bench - Offline Installer
+# All dependencies bundled, no internet required
 ###############################################################################
 set -e
 
-REPO_URL="https://raw.githubusercontent.com/NetApptool/ontap-s3-bench/main"
-INSTALL_DIR="$HOME/ontap-s3-bench"
-PYTHON=""
-PIP=""
-
-# --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+info()  { echo -e "${GREEN}[OK]${NC}   $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+error() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 step()  { echo -e "\n${CYAN}========== $1 ==========${NC}"; }
 
-# --- Detect package manager ---
-detect_pkg_mgr() {
-    if command -v dnf &>/dev/null; then
-        PKG_MGR="dnf"
-        PKG_INSTALL="dnf install -y"
-    elif command -v yum &>/dev/null; then
-        PKG_MGR="yum"
-        PKG_INSTALL="yum install -y"
-    elif command -v apt-get &>/dev/null; then
-        PKG_MGR="apt"
-        PKG_INSTALL="apt-get install -y"
-    else
-        error "Unsupported package manager. Need dnf/yum/apt-get."
-    fi
-    info "Package manager: $PKG_MGR"
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="$HOME/ontap-s3-bench"
 
-# --- Install system packages ---
-install_system_deps() {
-    step "Installing system dependencies"
+main() {
+    echo -e "${CYAN}"
+    echo "╔══════════════════════════════════════════════════════╗"
+    echo "║   ONTAP S3 Bench - Offline Installer                ║"
+    echo "║   All dependencies bundled, no internet required    ║"
+    echo "╚══════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
 
-    if [ "$PKG_MGR" = "apt" ]; then
-        sudo apt-get update -qq
-        sudo $PKG_INSTALL python3 python3-pip wget curl tar
-    else
-        # RHEL/CentOS/Rocky - only install essentials, pip wheels don't need gcc
-        sudo $PKG_INSTALL python3 python3-pip wget curl tar
-    fi
+    # --- Check package contents ---
+    step "Checking package contents"
+    [ -f "$SCRIPT_DIR/ontap_s3_bench.py" ] || error "ontap_s3_bench.py not found"
+    [ -f "$SCRIPT_DIR/bin/warp" ]           || error "bin/warp not found"
+    [ -d "$SCRIPT_DIR/wheels" ]             || error "wheels/ directory not found"
+    info "Package contents OK"
 
-    info "System dependencies installed"
-}
-
-# --- Find Python 3 ---
-find_python() {
+    # --- Find Python 3 ---
     step "Detecting Python 3"
-
-    for cmd in python3 python3.12 python3.11 python3.10 python3.9; do
+    PYTHON=""
+    for cmd in python3 python3.12 python3.11 python3.9 python3.8; do
         if command -v "$cmd" &>/dev/null; then
             PYTHON="$cmd"
             break
         fi
     done
-
-    [ -z "$PYTHON" ] && error "Python 3 not found after installation"
-
+    [ -z "$PYTHON" ] && error "Python 3 not found. Install python3 first: sudo dnf install -y python3"
     PY_VER=$($PYTHON --version 2>&1)
     info "Found: $PY_VER ($PYTHON)"
 
-    # Find pip
-    for cmd in pip3 pip3.12 pip3.11 pip3.10 pip3.9; do
-        if command -v "$cmd" &>/dev/null; then
-            PIP="$cmd"
-            break
-        fi
-    done
-
-    # Fallback: use python -m pip
-    if [ -z "$PIP" ]; then
-        if $PYTHON -m pip --version &>/dev/null; then
-            PIP="$PYTHON -m pip"
-            info "Using: $PYTHON -m pip"
-        else
-            warn "pip not found, installing via ensurepip..."
-            $PYTHON -m ensurepip --upgrade 2>/dev/null || sudo $PKG_INSTALL python3-pip
-            PIP="$PYTHON -m pip"
-        fi
-    else
-        info "Found: $($PIP --version 2>&1)"
+    # --- Ensure pip is available ---
+    step "Checking pip"
+    if ! $PYTHON -m pip --version &>/dev/null; then
+        info "pip not found, installing via ensurepip..."
+        $PYTHON -m ensurepip --upgrade 2>&1 || error "Failed to install pip. Run: sudo dnf install -y python3-pip"
     fi
-}
+    info "pip: $($PYTHON -m pip --version 2>&1 | head -1)"
 
-# --- Install Python dependencies ---
-install_python_deps() {
-    step "Installing Python dependencies"
+    # --- Install Python dependencies from local wheels ---
+    step "Installing Python dependencies (offline)"
+    WHEEL_DIR="$SCRIPT_DIR/wheels"
+    WHEEL_COUNT=$(ls "$WHEEL_DIR"/*.whl 2>/dev/null | wc -l)
+    info "Found $WHEEL_COUNT wheel files"
 
-    # Install all Python packages in one go (faster than one-by-one)
-    info "Installing Python packages (paramiko, requests, matplotlib, etc.)..."
-    $PIP install --quiet paramiko requests matplotlib jinja2 pyyaml python-docx numpy urllib3
+    $PYTHON -m pip install --quiet \
+        --no-index --find-links "$WHEEL_DIR" \
+        paramiko requests matplotlib jinja2 pyyaml python-docx numpy 2>&1 \
+        || $PYTHON -m pip install --quiet --break-system-packages \
+            --no-index --find-links "$WHEEL_DIR" \
+            paramiko requests matplotlib jinja2 pyyaml python-docx numpy 2>&1 \
+        || error "Python dependencies installation failed"
     info "All Python dependencies installed"
-}
 
-# --- Download project files ---
-download_project() {
-    step "Downloading ontap-s3-bench"
+    # --- Install project files ---
+    step "Installing project files"
+    mkdir -p "$INSTALL_DIR"/{bin,fonts}
 
-    mkdir -p "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
+    cp "$SCRIPT_DIR/ontap_s3_bench.py" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/ontap_s3_bench.py"
+    cp "$SCRIPT_DIR/config_example.yaml" "$INSTALL_DIR/" 2>/dev/null || true
 
-    # Download main script
-    info "Downloading ontap_s3_bench.py ..."
-    wget -q --no-check-certificate -O ontap_s3_bench.py "${REPO_URL}/ontap_s3_bench.py" \
-        || curl -skL -o ontap_s3_bench.py "${REPO_URL}/ontap_s3_bench.py"
-
-    # Download config example
-    info "Downloading config_example.yaml ..."
-    wget -q --no-check-certificate -O config_example.yaml "${REPO_URL}/config_example.yaml" \
-        || curl -skL -o config_example.yaml "${REPO_URL}/config_example.yaml"
-
-    # Verify download
-    if [ ! -s ontap_s3_bench.py ]; then
-        error "Download failed: ontap_s3_bench.py is empty"
+    # Keep wheels accessible for the script's auto-install fallback
+    if [ ! -d "$INSTALL_DIR/wheels" ]; then
+        ln -sf "$WHEEL_DIR" "$INSTALL_DIR/wheels" 2>/dev/null \
+            || cp -r "$WHEEL_DIR" "$INSTALL_DIR/wheels"
     fi
+    info "Project files installed to $INSTALL_DIR"
 
-    LINE_COUNT=$(wc -l < ontap_s3_bench.py)
-    info "Downloaded successfully ($LINE_COUNT lines)"
-}
+    # --- Install warp ---
+    step "Installing warp"
+    cp "$SCRIPT_DIR/bin/warp" "$INSTALL_DIR/bin/warp"
+    chmod +x "$INSTALL_DIR/bin/warp"
 
-# --- Install Chinese font for matplotlib charts ---
-install_font() {
-    step "Installing Chinese font (for report charts)"
-
-    FONT_DIR="/usr/share/fonts/wqy"
-    FONT_FILE="$FONT_DIR/wqy-microhei.ttc"
-
-    if [ -f "$FONT_FILE" ]; then
-        info "Chinese font already exists"
-        return
-    fi
-
-    # Try system package first
-    if [ "$PKG_MGR" = "apt" ]; then
-        sudo apt-get install -y fonts-wqy-microhei 2>/dev/null && return || true
+    # Try system-wide install
+    if sudo cp "$INSTALL_DIR/bin/warp" /usr/local/bin/warp 2>/dev/null; then
+        sudo chmod +x /usr/local/bin/warp
+        info "warp installed to /usr/local/bin/warp"
     else
-        sudo $PKG_INSTALL wqy-microhei-fonts 2>/dev/null && return || true
+        warn "Cannot write to /usr/local/bin, using $INSTALL_DIR/bin/warp"
+        export PATH="$INSTALL_DIR/bin:$PATH"
     fi
+    WARP_VER=$("$INSTALL_DIR/bin/warp" --version 2>&1 | head -1)
+    info "warp version: $WARP_VER"
 
-    # Fallback: download from GitHub
-    info "Downloading font from GitHub..."
-    sudo mkdir -p "$FONT_DIR"
-    FONT_URL="https://github.com/anthonyfok/fonts-wqy-microhei/raw/master/wqy-microhei.ttc"
-    sudo wget -q --no-check-certificate -O "$FONT_FILE" "$FONT_URL" 2>/dev/null \
-        || sudo curl -skL -o "$FONT_FILE" "$FONT_URL" 2>/dev/null || true
+    # --- Install font ---
+    step "Installing Chinese font"
+    if [ -f "$SCRIPT_DIR/fonts/wqy-microhei.ttc" ]; then
+        cp "$SCRIPT_DIR/fonts/wqy-microhei.ttc" "$INSTALL_DIR/fonts/"
 
-    if [ -f "$FONT_FILE" ] && [ -s "$FONT_FILE" ]; then
-        sudo fc-cache -f 2>/dev/null || true
-        info "Chinese font installed"
+        # Try system-wide install
+        FONT_DIR="/usr/share/fonts/wqy"
+        if sudo mkdir -p "$FONT_DIR" 2>/dev/null && \
+           sudo cp "$SCRIPT_DIR/fonts/wqy-microhei.ttc" "$FONT_DIR/" 2>/dev/null; then
+            sudo fc-cache -f 2>/dev/null || true
+            info "Font installed to $FONT_DIR"
+        else
+            info "Font available at $INSTALL_DIR/fonts/ (no root access for system install)"
+        fi
     else
-        warn "Font download failed - charts may show squares for Chinese characters"
+        warn "Font file not found in package, charts may show squares for Chinese"
     fi
 
     # Clear matplotlib font cache
     rm -rf "$HOME/.cache/matplotlib" 2>/dev/null || true
-}
 
-# --- Pre-download warp binary ---
-install_warp() {
-    step "Pre-downloading MinIO warp"
-
-    WARP_PATH="/usr/local/bin/warp"
-    if [ -x "$WARP_PATH" ]; then
-        info "warp already installed: $($WARP_PATH --version 2>&1 | head -1)"
-        return
-    fi
-
-    WARP_URL="https://dl.min.io/aistor/warp/release/linux-amd64/warp"
-    info "Downloading warp from MinIO CDN..."
-
-    wget -q --no-check-certificate -O /tmp/warp "$WARP_URL" \
-        || curl -skL -o /tmp/warp "$WARP_URL"
-
-    if [ -s /tmp/warp ]; then
-        sudo cp /tmp/warp "$WARP_PATH"
-        sudo chmod +x "$WARP_PATH"
-        rm -f /tmp/warp
-        info "warp installed: $($WARP_PATH --version 2>&1 | head -1)"
-    else
-        warn "warp download failed - the script will try again during Step 5"
-    fi
-}
-
-# --- Verify everything ---
-verify() {
+    # --- Verify ---
     step "Verification"
-
-    echo -e "\n${CYAN}System:${NC}"
-    echo "  OS: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)"
-    echo "  Python: $($PYTHON --version 2>&1)"
-    echo "  pip: $($PIP --version 2>&1 | head -1)"
-
     echo -e "\n${CYAN}Python packages:${NC}"
     FAIL=0
     for mod in paramiko requests matplotlib jinja2 yaml docx numpy; do
@@ -213,51 +135,26 @@ verify() {
         fi
     done
 
-    echo -e "\n${CYAN}System tools:${NC}"
-    for tool in wget tar sudo; do
-        if command -v "$tool" &>/dev/null; then
-            echo -e "  ${GREEN}OK${NC}  $tool"
-        else
-            echo -e "  ${RED}FAIL${NC}  $tool"
-            FAIL=1
-        fi
-    done
-
-    if command -v warp &>/dev/null; then
-        echo -e "  ${GREEN}OK${NC}  warp ($(warp --version 2>&1 | head -1))"
+    echo -e "\n${CYAN}Tools:${NC}"
+    if [ -x "$INSTALL_DIR/bin/warp" ]; then
+        echo -e "  ${GREEN}OK${NC}  warp ($WARP_VER)"
     else
-        echo -e "  ${YELLOW}WARN${NC}  warp (will be downloaded during test)"
+        echo -e "  ${RED}FAIL${NC}  warp"
+        FAIL=1
     fi
 
     echo -e "\n${CYAN}Project:${NC}"
     echo "  Location: $INSTALL_DIR"
-    echo "  Script: ontap_s3_bench.py ($(wc -l < "$INSTALL_DIR/ontap_s3_bench.py") lines)"
+    LINE_COUNT=$(wc -l < "$INSTALL_DIR/ontap_s3_bench.py")
+    echo "  Script: ontap_s3_bench.py ($LINE_COUNT lines)"
 
     if [ "$FAIL" = "1" ]; then
         error "Some dependencies are missing!"
     fi
 
     echo -e "\n${GREEN}All checks passed!${NC}"
-}
 
-# --- Main ---
-main() {
-    echo -e "${CYAN}"
-    echo "╔══════════════════════════════════════════════════════╗"
-    echo "║     ONTAP S3 Bench - One-Click Auto Installer       ║"
-    echo "║     Auto download + dependencies + launch           ║"
-    echo "╚══════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-
-    detect_pkg_mgr
-    install_system_deps
-    find_python
-    install_python_deps
-    download_project
-    install_font
-    install_warp
-    verify
-
+    # --- Done ---
     echo ""
     echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║           Installation Complete!                    ║${NC}"

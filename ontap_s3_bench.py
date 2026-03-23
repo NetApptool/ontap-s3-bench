@@ -27,7 +27,17 @@ def ensure_deps():
             missing.append(pkg)
     if missing:
         print(f"[*] 安装缺失依赖: {', '.join(missing)}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "-q"] + missing)
+        # Try offline wheels first
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        wheels_dir = os.path.join(script_dir, "wheels")
+        if not os.path.isdir(wheels_dir):
+            wheels_dir = os.path.join(script_dir, "..", "wheels")
+        if os.path.isdir(wheels_dir):
+            print(f"[*] 从离线包安装: {wheels_dir}")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "-q",
+                                   "--no-index", "--find-links", wheels_dir] + missing)
+        else:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "-q"] + missing)
         print("[*] 依赖安装完成")
 
 ensure_deps()
@@ -414,7 +424,10 @@ class ReportGenerator:
     def _setup_font(self):
         """查找可用的 CJK 字体"""
         self.font_prop = None
+        script_dir = os.path.dirname(os.path.abspath(__file__))
         candidates = [
+            os.path.join(script_dir, "fonts", "wqy-microhei.ttc"),
+            os.path.join(script_dir, "..", "fonts", "wqy-microhei.ttc"),
             "/usr/share/fonts/wqy/wqy-microhei.ttc",
             "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -892,7 +905,6 @@ class Benchmark:
         self.progress = None
 
         os.makedirs(os.path.join(self.work_dir, "warp_results"), exist_ok=True)
-        os.makedirs(os.path.join(self.work_dir, "system_monitor"), exist_ok=True)
         os.makedirs(os.path.join(self.work_dir, "ontap_perf"), exist_ok=True)
         os.makedirs(os.path.join(self.work_dir, "reports"), exist_ok=True)
 
@@ -1055,7 +1067,6 @@ class Benchmark:
                           "port": l["location"]["port"]["name"],
                           "policy": l["service_policy"]["name"]} for l in lifs],
             },
-            "network_baseline": {},
             "s3_config": {},
         }
 
@@ -1154,49 +1165,19 @@ class Benchmark:
             log.error("未找到 S3 服务，请先在 ONTAP 上启用 S3")
             sys.exit(1)
 
-        # Verify connectivity (install boto3 on VMs first, then use python3+boto3)
+        # Verify connectivity (curl)
         print("  验证 S3 连通性...")
-        print("  (确保 VM 已安装 boto3...)")
-        for vm in self.cfg.vms:
-            self.ssh.run(vm["ip"],
-                "pip3 install -q boto3 2>/dev/null || "
-                "pip3 install -q boto3 --break-system-packages 2>/dev/null || true",
-                timeout=120)
         ok_count = 0
-        verify_script = (
-            f"python3 -c '"
-            f"import boto3,botocore;"
-            f"c=boto3.client(\"s3\",endpoint_url=\"{self.cfg.s3_endpoint}\","
-            f"aws_access_key_id=\"{self.cfg.s3_access_key}\","
-            f"aws_secret_access_key=\"{self.cfg.s3_secret_key}\","
-            f"verify=False,region_name=\"us-east-1\","
-            f"config=botocore.config.Config(signature_version=\"s3v4\"));"
-            f"c.put_object(Bucket=\"{self.cfg.s3_bucket}\",Key=\"test-verify\",Body=b\"ok\");"
-            f"print(\"OK\")' 2>&1"
-        )
         for vm in self.cfg.vms:
             ip = vm["ip"]
-            rc, out, err = self.ssh.run(ip, verify_script)
-            if "OK" in out:
+            rc, out, err = self.ssh.run(ip,
+                f"curl -sk -o /dev/null -w '%{{http_code}}' {self.cfg.s3_endpoint}/ 2>&1")
+            http_code = out.strip().strip("'")
+            if http_code in ("200", "403", "301", "307"):
                 ok_count += 1
-                print(f"    {ip}: ✓")
+                print(f"    {ip}: ✓ (HTTP {http_code})")
             else:
-                detail = (out + err).strip()[:80]
-                print(f"    {ip}: ✗ {detail}")
-
-        # Clean up test object
-        if ok_count > 0:
-            cleanup_script = (
-                f"python3 -c '"
-                f"import boto3,botocore;"
-                f"c=boto3.client(\"s3\",endpoint_url=\"{self.cfg.s3_endpoint}\","
-                f"aws_access_key_id=\"{self.cfg.s3_access_key}\","
-                f"aws_secret_access_key=\"{self.cfg.s3_secret_key}\","
-                f"verify=False,region_name=\"us-east-1\","
-                f"config=botocore.config.Config(signature_version=\"s3v4\"));"
-                f"c.delete_object(Bucket=\"{self.cfg.s3_bucket}\",Key=\"test-verify\")' 2>/dev/null"
-            )
-            self.ssh.run(self.cfg.vms[0]["ip"], cleanup_script)
+                print(f"    {ip}: ✗ (HTTP {http_code}) {err[:50]}")
 
         log.info(f"S3 验证: {ok_count}/{len(self.cfg.vms)} 通过")
 
@@ -1243,31 +1224,41 @@ class Benchmark:
 
         log.banner("Step 5: 部署 warp")
 
-        # Download warp
-        warp_path = "/tmp/warp"
-        if not os.path.exists(warp_path):
+        # Find warp binary: local package dir > PATH > /tmp > download
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        warp_path = None
+        for candidate in [
+            os.path.join(script_dir, "bin", "warp"),
+            os.path.join(script_dir, "..", "bin", "warp"),
+            shutil.which("warp"),
+            "/usr/local/bin/warp",
+            "/tmp/warp",
+        ]:
+            if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                warp_path = candidate
+                break
+
+        if warp_path:
+            print(f"  warp 已存在: {warp_path}")
+        else:
+            warp_path = "/tmp/warp"
             print("  下载 warp...", end=" ", flush=True)
             try:
                 subprocess.run(["wget", "-q", WARP_CDN, "-O", warp_path], timeout=60, check=True)
                 os.chmod(warp_path, 0o755)
-                rc = subprocess.run([warp_path, "--version"], capture_output=True, text=True)
-                print(f"✓ {rc.stdout.strip()}")
+                print("✓")
             except Exception:
                 print("CDN 失败, 尝试 GitHub...", end=" ", flush=True)
                 subprocess.run(["wget", "-q", WARP_GITHUB, "-O", "/tmp/warp.tar.gz"], timeout=60, check=True)
                 subprocess.run(["tar", "xzf", "/tmp/warp.tar.gz", "-C", "/tmp/"], check=True)
                 os.chmod(warp_path, 0o755)
                 print("✓")
-        else:
-            print(f"  warp 已存在: {warp_path}")
 
         # Install locally
-        local_warp = shutil.which("warp") or "/usr/local/bin/warp"
         try:
             subprocess.run(["sudo", "cp", warp_path, "/usr/local/bin/warp"], check=True)
         except Exception:
             shutil.copy(warp_path, os.path.expanduser("~/warp"))
-            local_warp = os.path.expanduser("~/warp")
 
         # Distribute to VMs
         for i, vm in enumerate(self.cfg.vms):
@@ -1275,20 +1266,6 @@ class Benchmark:
             progress_bar(i, len(self.cfg.vms), "分发 warp")
             self.ssh.upload(ip, warp_path, "/usr/local/bin/warp")
         progress_bar(len(self.cfg.vms), len(self.cfg.vms), "分发 warp")
-
-        # Install dependencies on VMs
-        print("  安装 VM 依赖...")
-        for vm in self.cfg.vms:
-            ip = vm["ip"]
-            # Detect package manager
-            rc, out, _ = self.ssh.run(ip, "which dnf 2>/dev/null || which yum 2>/dev/null || which apt-get 2>/dev/null")
-            pkg_cmd = out.strip()
-            if "dnf" in pkg_cmd or "yum" in pkg_cmd:
-                self.ssh.run(ip, f"{pkg_cmd} install -y iperf3 sysstat nmap-ncat python3-pip 2>/dev/null", timeout=120)
-                self.ssh.run(ip, "pip3 install boto3 2>/dev/null || pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
-            elif "apt" in pkg_cmd:
-                self.ssh.run(ip, "apt-get update -q && apt-get install -y iperf3 sysstat ncat python3-pip 2>/dev/null", timeout=120)
-                self.ssh.run(ip, "pip3 install boto3 2>/dev/null || pip3 install boto3 --break-system-packages 2>/dev/null", timeout=120)
 
         # Sync time
         print("  同步时钟...")
@@ -1360,39 +1337,6 @@ class Benchmark:
         total = len(scenes)
         results_dir = os.path.join(self.work_dir, "warp_results")
 
-        # Network baseline first
-        if not self.progress.is_done("network_baseline"):
-            print("  网络基线测试 (iperf3)...")
-            iperf_results = []
-            if len(self.cfg.vms) >= 2:
-                server_ip = self.cfg.vms[0]["ip"]
-                self.ssh.run(server_ip, "pkill iperf3 2>/dev/null; iperf3 -s -D -p 5201")
-                time.sleep(2)
-                for vm in self.cfg.vms[1:]:
-                    rc, out, _ = self.ssh.run(vm["ip"],
-                        f"iperf3 -c {server_ip} -t 10 -P 4 2>&1 | grep SUM | tail -1")
-                    m = re.search(r'([\d.]+)\s+Gbits/sec', out)
-                    bw = float(m.group(1)) if m else 0
-                    iperf_results.append({"from": vm["ip"], "to": server_ip, "bandwidth_gbps": bw})
-                    print(f"    {vm['ip']} → {server_ip}: {bw} Gbps")
-                self.ssh.run(server_ip, "pkill iperf3")
-
-            self.env_data["network_baseline"] = {
-                "iperf3_vm_to_vm": iperf_results,
-                "ping_vm_to_s3_lif_avg_ms": [],
-            }
-            # Ping S3 LIF
-            for vm in self.cfg.vms:
-                rc, out, _ = self.ssh.run(vm["ip"], f"ping -c 10 -q {self.cfg.s3_lif_ip} 2>&1")
-                m = re.search(r'min/avg/max.*=\s*[\d.]+/([\d.]+)/', out)
-                avg = float(m.group(1)) if m else 0
-                self.env_data["network_baseline"]["ping_vm_to_s3_lif_avg_ms"].append(
-                    {"vm": vm["ip"], "avg_ms": avg})
-
-            with open(os.path.join(self.work_dir, "env_report.json"), "w") as f:
-                json.dump(self.env_data, f, indent=2, ensure_ascii=False)
-            self.progress.mark_done("network_baseline")
-
         # Execute test matrix
         start_time = time.time()
         for idx, (op, sz, conc, scene_name) in enumerate(scenes, 1):
@@ -1413,11 +1357,6 @@ class Benchmark:
             eta_str = f"{int(eta//60)}m{int(eta%60)}s" if eta > 0 else "计算中"
 
             progress_bar(idx - 1, total, f"{scene_name:<25}", extra=f"剩余 ~{eta_str}")
-
-            # Start VM monitors
-            for vm in self.cfg.vms:
-                self.ssh.run(vm["ip"],
-                    f"nohup sar -u -r -n DEV 5 > /root/warp_monitor/sar_{scene_name}.log 2>&1 &")
 
             # Build warp command
             extra = ""
@@ -1466,10 +1405,6 @@ class Benchmark:
                                     "status": "timeout"})
             except Exception as e:
                 log.error(f"{scene_name} 失败: {e}")
-
-            # Stop monitors
-            for vm in self.cfg.vms:
-                self.ssh.run(vm["ip"], "pkill -f 'sar -u' 2>/dev/null || true")
 
             self.progress.mark_done(f"scene_{scene_name}")
 
@@ -1546,7 +1481,7 @@ class Benchmark:
 
         if choice in ("1", "2"):
             for vm in self.cfg.vms:
-                self.ssh.run(vm["ip"], "pkill warp 2>/dev/null; pkill -f 'sar -u' 2>/dev/null")
+                self.ssh.run(vm["ip"], "pkill warp 2>/dev/null")
             log.info("VM warp client 已停止")
 
         if choice in ("1", "3"):
@@ -1563,7 +1498,7 @@ class Benchmark:
         """Ctrl+C 紧急清理"""
         for vm in self.cfg.vms:
             try:
-                self.ssh.run(vm["ip"], "pkill warp 2>/dev/null; pkill -f 'sar -u' 2>/dev/null")
+                self.ssh.run(vm["ip"], "pkill warp 2>/dev/null")
             except Exception:
                 pass
         self.ssh.close_all()
